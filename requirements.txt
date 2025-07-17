@@ -3,37 +3,3 @@ flask==2.3.3
 openai>=1.86.0
 azure-identity==1.15.0
 gunicorn==21.2.0
-
-# runtime.txt
-python-3.11.9
-
-# Procfile (for Heroku)
-web: python app.py
-
-# .gitignore
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-env/
-venv/
-.venv/
-pip-log.txt
-pip-delete-this-directory.txt
-.tox/
-.coverage
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.log
-.git
-.mypy_cache
-.pytest_cache
-.hypothesis
-temp_audio_chunks/
-*.mp3
-*.wav
-*.m4a
-*.md
