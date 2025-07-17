@@ -1,0 +1,55 @@
+# Procfile (for Heroku)
+web: python app.py
+
+# runtime.txt (for Heroku/Render - 使用 Python 3.11)
+python-3.11.9
+
+# .gitignore
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+.git
+.mypy_cache
+.pytest_cache
+.hypothesis
+temp_audio_chunks/
+*.mp3
+*.wav
+*.m4a
+*.md
+
+# requirements.txt (fixed for Python 3.11)
+flask==2.3.3
+pydub==0.25.1
+openai>=1.86.0
+azure-identity==1.15.0
+gunicorn==21.2.0
+
+# render.yaml (Render 配置文件)
+services:
+  - type: web
+    name: audio-transcript-tuner
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: AZURE_API_KEY
+        sync: false
+      - key: AZURE_ENDPOINT  
+        sync: false
