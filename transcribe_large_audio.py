@@ -1,8 +1,8 @@
 import os
 import json
 import sys
-from pydub import AudioSegment
 import math
+import subprocess
 
 # 嘗試導入 OpenAI，如果失敗則給出清晰的錯誤信息
 try:
@@ -13,8 +13,8 @@ except ImportError as e:
     sys.exit(1)
 
 # --- Configuration ---
-API_KEY = "5xF9YpUcEKxYt6IhIBywab0gAuQEMoJhtpASxkVuSPSQjSFGcgMmJQQJ99BEACHYHv6XJ3w3AAAAACOGYygR"
-AZURE_ENDPOINT = "https://silve-magk0is1-eastus2.cognitiveservices.azure.com/"
+API_KEY = os.environ.get('AZURE_API_KEY', "5xF9YpUcEKxYt6IhIBywab0gAuQEMoJhtpASxkVuSPSQjSFGcgMmJQQJ99BEACHYHv6XJ3w3AAAAACOGYygR")
+AZURE_ENDPOINT = os.environ.get('AZURE_ENDPOINT', "https://silve-magk0is1-eastus2.cognitiveservices.azure.com/")
 WHISPER_MODEL = "my-gemini-recorder"
 GPT_MODEL = "my-gemini-finetuner"
 WHISPER_API_VERSION = "2024-06-01"
@@ -38,35 +38,60 @@ def test_openai_version():
         print(f"❌ OpenAI 庫測試失敗: {e}")
         return False
 
-def split_audio(file_path, max_size_mb=25):
-    """Splits an audio file into chunks under a specific size."""
-    audio = AudioSegment.from_file(file_path)
-    file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+def get_file_size_mb(file_path):
+    """獲取文件大小（MB）"""
+    return os.path.getsize(file_path) / (1024 * 1024)
 
-    if file_size_mb <= max_size_mb:
-        return [file_path]
-
-    num_chunks = math.ceil(file_size_mb / max_size_mb)
-    duration_ms = len(audio)
-    chunk_duration_ms = math.ceil(duration_ms / num_chunks)
+def split_audio_with_ffmpeg(file_path, max_size_mb=20):
+    """使用 ffmpeg 分割音頻文件（如果可用）"""
+    file_size_mb = get_file_size_mb(file_path)
     
-    chunks = []
-    temp_dir = "temp_audio_chunks"
-    if not os.path.exists(temp_dir):
-        os.makedirs(temp_dir)
-
-    for i in range(num_chunks):
-        start_ms = i * chunk_duration_ms
-        end_ms = min((i + 1) * chunk_duration_ms, duration_ms)
-        chunk = audio[start_ms:end_ms]
-        chunk_path = os.path.join(temp_dir, f"chunk_{i+1}.mp3")
-        chunk.export(chunk_path, format="mp3")
-        chunks.append(chunk_path)
-
-    return chunks
+    if file_size_mb <= max_size_mb:
+        print(f"文件大小 {file_size_mb:.2f}MB，無需分割")
+        return [file_path]
+    
+    print(f"文件太大 ({file_size_mb:.2f}MB)，嘗試分割...")
+    
+    try:
+        # 檢查是否有 ffmpeg
+        subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
+        print("✅ 找到 ffmpeg，開始分割")
+        
+        # 獲取音頻時長
+        result = subprocess.run([
+            'ffprobe', '-v', 'quiet', '-show_entries', 
+            'format=duration', '-of', 'csv=p=0', file_path
+        ], capture_output=True, text=True, check=True)
+        
+        duration = float(result.stdout.strip())
+        num_chunks = math.ceil(file_size_mb / max_size_mb)
+        chunk_duration = duration / num_chunks
+        
+        chunks = []
+        temp_dir = "temp_audio_chunks"
+        if not os.path.exists(temp_dir):
+            os.makedirs(temp_dir)
+        
+        for i in range(num_chunks):
+            start_time = i * chunk_duration
+            chunk_path = os.path.join(temp_dir, f"chunk_{i+1}.mp3")
+            
+            subprocess.run([
+                'ffmpeg', '-i', file_path, '-ss', str(start_time),
+                '-t', str(chunk_duration), '-c', 'copy', chunk_path, '-y'
+            ], capture_output=True, check=True)
+            
+            chunks.append(chunk_path)
+            print(f"  - 創建分段 {i+1}/{num_chunks}")
+        
+        return chunks
+        
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        print("❌ ffmpeg 不可用，無法分割大文件")
+        return [file_path]  # 返回原文件，讓 API 處理
 
 def transcribe_chunk(client, chunk_path):
-    """Transcribes a single audio chunk using the Whisper API."""
+    """轉錄音頻分段"""
     try:
         with open(chunk_path, 'rb') as audio_file:
             transcript = client.audio.transcriptions.create(
@@ -78,7 +103,7 @@ def transcribe_chunk(client, chunk_path):
         return f"[轉錄錯誤: {e}]"
 
 def fine_tune_transcript(client, raw_transcript, filename):
-    """Uses GPT-4.1 to improve and format the transcript."""
+    """使用 GPT-4.1 改善轉錄"""
     prompt = f"""請改善此音頻轉錄，重點包括：
 
 1. **Grammar and Punctuation**: Fix grammar errors, add proper punctuation, and correct sentence structure
@@ -127,7 +152,7 @@ def create_azure_client(api_version):
         return None
 
 def process_audio_file(audio_file_path):
-    """Main processing function that returns results as JSON."""
+    """主要處理函數"""
     try:
         print("🔍 測試 OpenAI 庫...")
         if not test_openai_version():
@@ -138,8 +163,18 @@ def process_audio_file(audio_file_path):
         if not whisper_client:
             return {'status': 'error', 'message': '無法創建 Whisper 客戶端'}
 
-        print("📄 處理音頻文件...")
-        chunks = split_audio(audio_file_path)
+        print("📄 檢查文件大小...")
+        file_size_mb = get_file_size_mb(audio_file_path)
+        print(f"文件大小: {file_size_mb:.2f}MB")
+
+        # 處理音頻分割（如果需要）
+        if file_size_mb > 20:
+            print("🔄 文件較大，嘗試分割...")
+            chunks = split_audio_with_ffmpeg(audio_file_path)
+        else:
+            chunks = [audio_file_path]
+
+        print(f"📝 開始轉錄 {len(chunks)} 個分段...")
         full_transcript = []
 
         for i, chunk_path in enumerate(chunks, 1):
@@ -147,11 +182,11 @@ def process_audio_file(audio_file_path):
             text = transcribe_chunk(whisper_client, chunk_path)
             full_transcript.append(text)
 
-        # Combine Raw Transcript
-        raw_transcript = "\n".join(full_transcript)
+        # 合併轉錄結果
+        raw_transcript = "\n\n".join(full_transcript)
         base_filename = os.path.splitext(os.path.basename(audio_file_path))[0]
         
-        # Save No-Modified Version
+        # 保存原始版本
         no_modified_filename = f"{base_filename}_No-modified.md"
         with open(no_modified_filename, 'w', encoding='utf-8') as f:
             f.write(f"# Raw Transcript - {base_filename}\n\n")
@@ -167,12 +202,12 @@ def process_audio_file(audio_file_path):
         print("🔧 使用 GPT-4.1 改善內容...")
         fine_tuned_transcript = fine_tune_transcript(gpt_client, raw_transcript, base_filename)
         
-        # Save Fine-tuned Version
+        # 保存改善版本
         fine_tuned_filename = f"{base_filename}_Fine-tuned.md"
         with open(fine_tuned_filename, 'w', encoding='utf-8') as f:
             f.write(fine_tuned_transcript)
 
-        # Cleanup
+        # 清理臨時文件
         if os.path.exists("temp_audio_chunks"):
             for chunk_file in os.listdir("temp_audio_chunks"):
                 os.remove(os.path.join("temp_audio_chunks", chunk_file))
@@ -200,7 +235,7 @@ def process_audio_file(audio_file_path):
         return {'status': 'error', 'message': str(e)}
 
 def main():
-    print("🎙️ Audio Transcript Fine-Tuner")
+    print("🎙️ Audio Transcript Fine-Tuner (無 pydub 版本)")
     print("=" * 40)
     
     if len(sys.argv) > 1:
