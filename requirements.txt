@@ -1,0 +1,4 @@
+flask==2.3.3
+pydub==0.25.1
+openai>=1.86.0
+azure-identity==1.15.0
